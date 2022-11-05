@@ -1,3 +1,4 @@
+mod dao;
 mod data_model;
 mod json_handler;
 use data_model::TimeSeries;
@@ -71,4 +72,12 @@ fn main() {
     let time_series2: TimeSeries = (&time_series_json).try_into().unwrap();
     let time_series_json2: Value = (&time_series2).into();
     println!("TimeSeries2: {}", time_series_json2);
+
+    if let Ok(dao) = dao::Dao::new_in_memory() {
+        if let Ok(persons) = dao.get_persons() {
+            for person in persons {
+                println!("Person #{}: {}", person.id, person.name);
+            }
+        }
+    }
 }
