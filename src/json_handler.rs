@@ -1,4 +1,4 @@
-use json;
+use serde_json::Value;
 
 pub struct HandlingError {
     pub message: String,
@@ -6,5 +6,5 @@ pub struct HandlingError {
 }
 
 pub trait FunctionHandler {
-    fn handle(&self, json: json::JsonValue) -> Result<json::JsonValue, HandlingError>;
+    fn handle(&self, json: Value) -> Result<Value, HandlingError>;
 }
