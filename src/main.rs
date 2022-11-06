@@ -1,147 +1,116 @@
+//! A chat server that broadcasts a message to all connections.
+//!
+//! This is a simple line-based server which accepts WebSocket connections,
+//! reads lines from those connections, and broadcasts the lines to all other
+//! connected clients.
+//!
+//! You can test this out by running:
+//!
+//!     cargo run --example server 127.0.0.1:12345
+//!
+//! And then in another window run:
+//!
+//!     cargo run --example client ws://127.0.0.1:12345/
+//!
+//! You can run the second command in multiple windows and then chat between the
+//! two, seeing the messages from the other client as they're received. For all
+//! connected clients they'll all join the same room and see everyone else's
+//! messages.
 mod dao;
 mod data_model;
 mod errors;
 mod json_handler;
-use chrono::Utc;
-use data_model::{Plot, TimeSeries, TimeSeriesEntry};
-use errors::HandlingError;
-use json_handler::FunctionHandler;
-use serde_json::{Error, Value};
-use std::collections::HashMap;
 
-type GenericJson = Result<Value, Error>;
+use std::{env, io::Error as IoError, io::ErrorKind, net::SocketAddr, sync::Arc};
 
-struct Echo {}
+use futures_channel::mpsc::{unbounded, UnboundedSender};
+use futures_util::{future, pin_mut, stream::TryStreamExt, StreamExt};
 
-impl FunctionHandler for Echo {
-    fn handle(&self, json: Value) -> Result<Value, HandlingError> {
-        Ok(json)
+use tokio::net::{TcpListener, TcpStream};
+use tungstenite::protocol::Message;
+
+use dao::Dao;
+use data_model::Plot;
+use json_handler::Dispatcher;
+
+use nix;
+
+type Tx = UnboundedSender<Message>;
+type Dp = Arc<Dispatcher>;
+
+pub fn privdrop(user: &str, group: &str) -> Result<(), nix::Error> {
+    match nix::unistd::Group::from_name(group)? {
+        Some(group) => nix::unistd::setgid(group.gid),
+
+        None => Err(nix::Error::last()),
+    }?;
+
+    match nix::unistd::User::from_name(user)? {
+        Some(user) => nix::unistd::setuid(user.uid),
+
+        None => Err(nix::Error::last()),
     }
 }
 
-struct Add {}
+async fn handle_connection(dispatcher: Dp, raw_stream: TcpStream, addr: SocketAddr) {
+    println!("Incoming TCP connection from: {}", addr);
 
-impl FunctionHandler for Add {
-    fn handle(&self, mut json: Value) -> Result<Value, HandlingError> {
-        if !json["lol"].is_null() {
-            json["lol"] = "fluebls".into();
-            json["nonlol"] = "mehrso".into();
-            Ok(json)
-        } else {
-            Err(HandlingError {
-                message: "Kein lol".to_string(),
-                code: 14,
-            })
-        }
-    }
+    let ws_stream = tokio_tungstenite::accept_async(raw_stream)
+        .await
+        .expect("Error during the websocket handshake occurred");
+    println!("WebSocket connection established: {}", addr);
+
+    let (tx, rx) = unbounded();
+
+    let (outgoing, incoming) = ws_stream.split();
+
+    let broadcast_incoming = incoming.try_for_each(|msg| {
+        tx.unbounded_send(Message::text("Got your message!".to_string()));
+        dispatcher.dispatch(&msg, &tx);
+        future::ok(())
+    });
+
+    let receive_from_others = rx.map(Ok).forward(outgoing);
+
+    pin_mut!(broadcast_incoming, receive_from_others);
+    future::select(broadcast_incoming, receive_from_others).await;
+
+    println!("{} disconnected", &addr);
 }
 
-type Handler = Box<dyn FunctionHandler>;
-
-fn get_handler_map() -> HashMap<&'static str, Handler> {
-    HashMap::from([
-        ("Echo", Box::new(Echo {}) as Handler),
-        ("Add", Box::new(Add {}) as Handler),
-    ])
-}
-
-fn main() {
-    let handlers = get_handler_map();
-
-    let msg_json: GenericJson = serde_json::from_str("{\"lol\": \"hgnla\"}");
-
-    if let Ok(msg_json) = msg_json {
-        if let Ok(response) = handlers["Echo"].handle(msg_json.clone()) {
-            println!("Echo: {}", response);
-        }
-
-        if let Ok(response) = handlers["Add"].handle(msg_json.clone()) {
-            println!("Add: {}", response);
-        } else {
-            println!("Error");
-        }
-    }
-
-    let time_series = TimeSeries {
-        id: 1,
-        name: "It's the name".to_string(),
-        unit: "kg".to_string(),
-        time_points: vec![Utc::now()],
-        values: vec![44.0],
-    };
-
-    let time_series_json: Value = (&time_series).into();
-    println!("TimeSeries: {}", time_series_json);
-    let time_series2: TimeSeries = (&time_series_json).try_into().unwrap();
-    let time_series_json2: Value = (&time_series2).into();
-    println!("TimeSeries2: {}", time_series_json2);
-
-    let plot = Plot {
+#[tokio::main]
+async fn main() -> Result<(), IoError> {
+    let mut dao =
+        Dao::new_in_memory().or(Err(IoError::new(ErrorKind::Other, "Database error.")))?;
+    dao.add_plot(&Plot {
         id: 0,
-        name: "cool".to_string(),
-        description: "cool data".to_string(),
-        time_series: vec![
-            TimeSeries {
-                id: 0,
-                name: "cool heat value".to_string(),
-                unit: "a few K".to_string(),
-                time_points: vec![Utc::now().into()],
-                values: vec![3.1],
-            },
-            TimeSeries {
-                id: 0,
-                name: "a bit hotter heat value".to_string(),
-                unit: "a few nore K".to_string(),
-                time_points: vec![Utc::now().into()],
-                values: vec![63.898],
-            },
-        ],
-    };
+        name: "entry".to_string(),
+        description: "desc".to_string(),
+        time_series: vec![],
+    })
+    .or(Err(IoError::new(ErrorKind::Other, "Database error.")))?;
+    let dispatcher = Arc::new(Dispatcher::new(dao));
+    let addr = env::args()
+        .nth(1)
+        .unwrap_or_else(|| "127.0.0.1:8080".to_string());
+    let user = env::args().nth(2);
+    let group = env::args().nth(3);
 
-    if let Ok(mut dao) = dao::Dao::new_in_memory() {
-        match dao.add_plot(&plot) {
-            Ok(plot) => println!("Successfully added {:?}.", plot),
-            Err(err) => println!("Error: {:?}", err),
-        };
+    // Create the event loop and TCP listener we'll accept connections on.
+    let try_socket = TcpListener::bind(&addr).await;
+    let listener = try_socket.expect("Failed to bind");
+    println!("Listening on: {}", addr);
 
-        match dao.add_time_series(1, &time_series2) {
-            Ok(time_series) => println!("Successfully added {:?}.", time_series),
-            Err(err) => println!("Error: {:?}", err),
-        };
-
-        let entry = TimeSeriesEntry {
-            time_point: Utc::now(),
-            value: 48588.3,
-        };
-
-        match dao.add_entry(2, &entry) {
-            Ok(_) => println!("Added entry."),
-            Err(err) => println!("Error: {:?}", err),
-        };
-
-        match dao.get_time_series(1, true, None) {
-            Ok(time_series) => println!("{:?}", time_series),
-            Err(err) => println!("Error: {:?}", err),
-        };
-
-        match dao.get_time_series(2, true, None) {
-            Ok(time_series) => println!("{:?}", time_series),
-            Err(err) => println!("Error: {:?}", err),
-        };
-
-        match dao.get_time_series(3, true, None) {
-            Ok(time_series) => println!("{:?}", time_series),
-            Err(err) => println!("Error: {:?}", err),
-        };
-
-        match dao.get_plot(1, false, None) {
-            Ok(plot) => println!("{:?}.", plot),
-            Err(err) => println!("Error: {:?}", err),
-        };
-
-        match dao.get_plot(1, true, None) {
-            Ok(plot) => println!("{:?}.", plot),
-            Err(err) => println!("Error: {:?}", err),
-        };
+    if user != None && group != None {
+        privdrop(&user.unwrap(), &group.unwrap()).expect("Privilege drop failed.");
+    } else {
+        println!("No user/group privileges to drop to specified.");
     }
+
+    // Let's spawn the handling of each connection in a separate task.
+    while let Ok((stream, addr)) = listener.accept().await {
+        handle_connection(dispatcher.clone(), stream, addr).await;
+    }
+
+    Ok(())
 }
