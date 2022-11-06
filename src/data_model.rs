@@ -1,6 +1,8 @@
+use crate::errors::HandlingError;
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 
+#[derive(Debug, Clone)]
 pub struct TimeSeries {
     pub id: i64,
     pub name: String,
@@ -9,11 +11,27 @@ pub struct TimeSeries {
     pub values: Vec<f64>,
 }
 
+#[derive(Debug, Clone)]
 pub struct Plot {
     pub id: i64,
     pub name: String,
     pub description: String,
     pub time_series: Vec<TimeSeries>,
+}
+
+pub fn time_point_from_str(string: &str) -> Result<DateTime<Utc>, HandlingError> {
+    if let Ok(val) = DateTime::parse_from_rfc3339(string) {
+        Ok(val.into())
+    } else {
+        Err(HandlingError {
+            message: "Could not parse date.".to_string(),
+            code: 430,
+        })
+    }
+}
+
+pub fn time_point_to_string(time_point: &DateTime<Utc>) -> String {
+    time_point.to_rfc3339()
 }
 
 fn to_f64_vec(json: &Value) -> Option<Vec<f64>> {
@@ -38,9 +56,9 @@ fn to_datetime_vec(json: &Value) -> Option<Vec<DateTime<Utc>>> {
             let mut added = false;
 
             if let Some(string) = entry.as_str() {
-                if let Ok(time_point) = DateTime::parse_from_rfc3339(string) {
+                if let Ok(time_point) = time_point_from_str(string) {
                     added = true;
-                    ret_val.push(time_point.into());
+                    ret_val.push(time_point);
                 }
             }
 
@@ -56,7 +74,7 @@ fn to_datetime_vec(json: &Value) -> Option<Vec<DateTime<Utc>>> {
 fn to_json_array(time_points: &Vec<DateTime<Utc>>) -> Value {
     let mut ret_val: Vec<String> = Vec::new();
     for time_point in time_points {
-        ret_val.push(time_point.to_rfc3339());
+        ret_val.push(time_point_to_string(time_point));
     }
     json!(ret_val)
 }
@@ -139,5 +157,28 @@ impl<'a> Into<Value> for &'a Plot {
         "Description": self.description,
         "TimeSeries": time_series_jsons
         })
+    }
+}
+
+// Only for convenience
+#[derive(Debug, Clone)]
+pub struct TimeSeriesEntry {
+    pub time_point: DateTime<Utc>,
+    pub value: f64,
+}
+
+impl TimeSeriesEntry {
+    pub fn new_from_string(time_point: &str, value: f64) -> Result<Self, HandlingError> {
+        if let Ok(time_point) = time_point_from_str(time_point) {
+            Ok(Self {
+                time_point: time_point,
+                value: value,
+            })
+        } else {
+            Err(HandlingError {
+                message: "Date could not be parsed.".to_string(),
+                code: 410,
+            })
+        }
     }
 }
