@@ -21,13 +21,12 @@ mod data_model;
 mod errors;
 mod json_handler;
 
+use futures_channel::mpsc::unbounded;
+use futures_util::{future, pin_mut, stream::TryStreamExt, StreamExt};
 use std::{env, io::Error as IoError, io::ErrorKind, net::SocketAddr, sync::Arc};
 
-use futures_channel::mpsc::{unbounded, UnboundedSender};
-use futures_util::{future, pin_mut, stream::TryStreamExt, StreamExt};
-
 use tokio::net::{TcpListener, TcpStream};
-use tungstenite::protocol::Message;
+use tokio::task;
 
 use dao::Dao;
 use data_model::Plot;
@@ -35,7 +34,6 @@ use json_handler::Dispatcher;
 
 use nix;
 
-type Tx = UnboundedSender<Message>;
 type Dp = Arc<Dispatcher>;
 
 pub fn privdrop(user: &str, group: &str) -> Result<(), nix::Error> {
@@ -60,25 +58,26 @@ async fn handle_connection(dispatcher: Dp, raw_stream: TcpStream, addr: SocketAd
         .expect("Error during the websocket handshake occurred");
     println!("WebSocket connection established: {}", addr);
 
+    let (outgoing, incoming) = ws_stream.split();
+    // Insert the write part of this peer to the peer map.
     let (tx, rx) = unbounded();
 
-    let (outgoing, incoming) = ws_stream.split();
-
-    let broadcast_incoming = incoming.try_for_each(|msg| {
-        tx.unbounded_send(Message::text("Got your message!".to_string()));
-        dispatcher.dispatch(&msg, &tx);
+    let read_future = incoming.try_for_each(|msg| {
+        if let Some(response) = dispatcher.dispatch(&msg) {
+            tx.unbounded_send(response).unwrap();
+        }
         future::ok(())
     });
 
-    let receive_from_others = rx.map(Ok).forward(outgoing);
+    let forward = rx.map(Ok).forward(outgoing);
 
-    pin_mut!(broadcast_incoming, receive_from_others);
-    future::select(broadcast_incoming, receive_from_others).await;
+    pin_mut!(read_future, forward);
+    future::select(read_future, forward).await;
 
     println!("{} disconnected", &addr);
 }
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), IoError> {
     let mut dao =
         Dao::new_in_memory().or(Err(IoError::new(ErrorKind::Other, "Database error.")))?;
@@ -106,11 +105,15 @@ async fn main() -> Result<(), IoError> {
     } else {
         println!("No user/group privileges to drop to specified.");
     }
-
-    // Let's spawn the handling of each connection in a separate task.
-    while let Ok((stream, addr)) = listener.accept().await {
-        handle_connection(dispatcher.clone(), stream, addr).await;
-    }
+    let local = task::LocalSet::new();
+    local
+        .run_until(async {
+            // Let's spawn the handling of each connection in a separate task.
+            while let Ok((stream, addr)) = listener.accept().await {
+                task::spawn_local(handle_connection(dispatcher.clone(), stream, addr));
+            }
+        })
+        .await;
 
     Ok(())
 }

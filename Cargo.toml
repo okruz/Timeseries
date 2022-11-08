@@ -12,7 +12,7 @@ futures-util = { version = "0.3", default-features = true }
 futures-channel = { version = "0.3", default-features = true }
 serde_json = {version = "1.0.87", default-features = true}
 chrono = {version = "0.4.22", default-features = true}
-tokio = { version = "1.0.0", features = ["full"] }
+tokio = { version = "1.21.2", features = ["full"] }
 nix = {version = "0.18.0", default-features = true}
 tungstenite = {version = "0.17.3", default-features = true}
 tokio-tungstenite = {version = "0.17.2", default-features = true}

@@ -1,12 +1,9 @@
 use crate::dao::Dao;
 use crate::errors::HandlingError;
-use futures_channel::mpsc::UnboundedSender;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tungstenite::protocol::Message;
-
-type Tx = UnboundedSender<Message>;
 
 pub trait FunctionHandler {
     fn handle(&self, json: Value) -> Result<Value, HandlingError>;
@@ -48,18 +45,18 @@ impl Dispatcher {
         }
     }
 
-    pub fn dispatch(&self, message: &Message, tx: &Tx) {
+    pub fn dispatch(&self, message: &Message) -> Option<Message> {
         if let Ok(msg_string) = message.to_text() {
-            println!("Received: \"{}\".", msg_string);
             if let Ok(json_value) = serde_json::from_str(msg_string) {
-                self.dispatch_internal(json_value, tx);
+                return self.dispatch_internal(json_value);
             } else {
                 println!("Could not parse JSON.");
             }
         }
+        None
     }
 
-    fn dispatch_internal(&self, mut json_rpc: Value, tx: &Tx) {
+    fn dispatch_internal(&self, mut json_rpc: Value) -> Option<Message> {
         let id = json_rpc["id"].take();
 
         if !id.is_null() {
@@ -72,13 +69,9 @@ impl Dispatcher {
                         json![{"jsonrpc": "2.0", "id": id, "error": {"message": err.message, "code": err.code}}]
                     }
                 }.to_string();
-
-                let message = Message::text(response);
-                match tx.unbounded_send(message) {
-                    Ok(_) => println!("Send successful"),
-                    Err(_) => println!("Send failed"),
-                };
+                return Some(Message::text(response));
             }
         }
+        None
     }
 }
