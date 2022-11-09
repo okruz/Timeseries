@@ -111,6 +111,10 @@ impl<'a> Into<Value> for &'a TimeSeries {
 }
 
 fn to_timeseries_vec(json: &Value) -> Option<Vec<TimeSeries>> {
+    if json.is_null() {
+        return Some(vec![]);
+    }
+
     let mut ret_val: Vec<TimeSeries> = Vec::new();
     if let Some(array) = json.as_array() {
         for entry in array {
