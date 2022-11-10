@@ -1,5 +1,7 @@
 use crate::dao::Dao;
+use crate::data_model::time_point_from_str;
 use crate::errors::HandlingError;
+use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,13 +27,46 @@ impl FunctionHandler for GetAllPlots {
     }
 }
 
+struct GetPlot {
+    dao: Arc<Dao>,
+}
+
+impl FunctionHandler for GetPlot {
+    fn handle(&self, json: Value) -> Result<Value, HandlingError> {
+        if let Some(id) = json["Id"].as_i64() {
+            let start_date = match json["StartDate"]
+                .as_str()
+                .map(|date_string| time_point_from_str(&date_string))
+            {
+                None => Ok(None),
+                Some(Ok(date_time)) => Ok(Some(date_time)),
+                Some(Err(err)) => Err(err),
+            }?;
+
+            let plot = self.dao.get_plot_with_data(id, start_date)?;
+            return Ok((&plot).into());
+        }
+
+        Err(HandlingError {
+            message: "Id missing".to_string(),
+            code: 420,
+        })
+    }
+}
+
 type Handler = Arc<dyn FunctionHandler>;
 
 fn get_handler_map(dao: Arc<Dao>) -> HashMap<String, Handler> {
-    HashMap::from([(
-        "GetAllPlots".to_string(),
-        Arc::new(GetAllPlots { dao: dao.clone() }) as Handler,
-    )])
+    HashMap::from([
+        (
+            "GetAllPlots".to_string(),
+            Arc::new(GetAllPlots { dao: dao.clone() }) as Handler,
+        ),
+        (
+            "GetPlot".to_string(),
+            Arc::new(GetPlot { dao: dao.clone() }) as Handler,
+        ),
+    ])
 }
 
 pub struct Dispatcher {

@@ -70,10 +70,10 @@ impl Dao {
     pub fn get_entries_for_time_series(
         &self,
         time_series: &mut TimeSeries,
-        start_date: Option<&DateTime<Utc>>,
+        start_date: Option<DateTime<Utc>>,
     ) -> Result<(), HandlingError> {
         let date_string = start_date
-            .map(|val| time_point_to_string(val))
+            .map(|val| time_point_to_string(&val))
             .unwrap_or("".to_string());
 
         let mut stmt = self.conn.prepare(
@@ -153,7 +153,7 @@ impl Dao {
     pub fn get_plot_with_data(
         &self,
         id: i64,
-        start_date: Option<&DateTime<Utc>>,
+        start_date: Option<DateTime<Utc>>,
     ) -> Result<Plot, HandlingError> {
         let mut plot = self.get_plot(id)?;
 
