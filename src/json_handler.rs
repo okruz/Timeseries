@@ -34,17 +34,30 @@ struct GetPlot {
 impl FunctionHandler for GetPlot {
     fn handle(&self, json: Value) -> Result<Value, HandlingError> {
         if let Some(id) = json["Id"].as_i64() {
-            let start_date = match json["StartDate"]
-                .as_str()
-                .map(|date_string| time_point_from_str(&date_string))
-            {
-                None => Ok(None),
-                Some(Ok(date_time)) => Ok(Some(date_time)),
-                Some(Err(err)) => Err(err),
-            }?;
+            let without_data = match json["WithoutData"].as_bool() {
+                Some(val) => val,
+                None => false,
+            };
 
-            let plot = self.dao.get_plot_with_data(id, start_date)?;
-            return Ok((&plot).into());
+            if without_data {
+                // Only get the plot and time series metadata but no entries for the timeseries.
+                let mut plot = self.dao.get_plot(id)?;
+                self.dao.get_time_series_for_plot(&mut plot)?;
+                return Ok((&plot).into());
+            } else {
+                // Get all entries if "StartDate" is not set.
+                let start_date = match json["StartDate"]
+                    .as_str()
+                    .map(|date_string| time_point_from_str(&date_string))
+                {
+                    None => Ok(None),
+                    Some(Ok(date_time)) => Ok(Some(date_time)),
+                    Some(Err(err)) => Err(err),
+                }?;
+
+                let plot = self.dao.get_plot_with_data(id, start_date)?;
+                return Ok((&plot).into());
+            }
         }
 
         Err(HandlingError {

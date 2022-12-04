@@ -36,7 +36,7 @@ impl Dao {
         )?;
         self.conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS index_time_series_name
-            ON time_series ( name )",
+            ON time_series ( plot_id, name )",
             (), // empty list of parameters.
         )?;
 
